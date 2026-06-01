@@ -289,6 +289,20 @@ footer {
   text-align:center;padding:24px 40px;font-size:11px;color:var(--muted);
   border-top:1px solid var(--border);margin-top:60px;
 }
+.api-bar {
+  background:#fffbeb;border-bottom:1px solid #fde68a;
+  padding:10px 40px;display:flex;align-items:center;gap:12px;font-size:13px;
+}
+.api-bar label { font-weight:600;white-space:nowrap;color:#92400e; }
+.api-bar input {
+  flex:1;max-width:400px;padding:7px 12px;border-radius:7px;
+  border:1px solid #fcd34d;font-size:13px;font-family:monospace;
+  background:#fff;color:#1a1a2e;outline:none;
+}
+.api-bar input:focus { border-color:var(--accent); }
+.api-bar input.ok { border-color:#10b981;background:#f0fdf4; }
+.api-bar .api-hint { font-size:11px;color:#b45309; }
+.api-bar a { color:var(--accent);text-decoration:none;font-weight:600; }
 
 
 </style>
@@ -313,6 +327,13 @@ footer {
         <div class="step-label">Nmbrs Loonstroken</div>
       </div>
     </div>
+  </div>
+
+  <!-- API Key balk -->
+  <div class="api-bar">
+    <label>🔑 Anthropic API Key:</label>
+    <input type="password" id="apiKeyInput" placeholder="sk-ant-api03-..." oninput="handleApiKeyInput(this)">
+    <span class="api-hint">Nodig voor stap 2 (loonstroken scannen). Vraag je key op via <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a></span>
   </div>
 
   <!-- Hero band -->
@@ -793,89 +814,102 @@ function updateStats1(workers) {
 // ═══════════════════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════════════════
-// PDF PARSING — Pagina 2  (geen API nodig — leest PDF tekst direct)
-// Gebaseerd op exacte Nmbrs loonstrook opmaak:
-// Regel 2: "Bedrijfsnaam  De heer/Mevrouw Initialen [voorvoegsel] Achternaam"
-// Regel 6: "Pers. nr.: 3  In dienst: ...  Contract: ...  Periode: ..."
+// ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// PDF PARSING — Pagina 2  (via Anthropic API — directe browser toegang)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Extraheer velden uit één pagina Nmbrs loonstrook tekst
-function extractLoonstrookData(text) {
-  const data = {};
+// Stuur PDF naar Claude API; ontvang per loonstrook een JSON object
+async function extractLoonstrokenViaApi(base64Pdf, apiKey) {
+  const prompt = `Je krijgt een Nmbrs salarisspecificatie PDF met mogelijk meerdere paginas.
+Elke pagina bevat een loonstrook voor één medewerker.
 
-  // ── Personeelsnummer ───────────────────────────────────────────────────
-  // Exacte Nmbrs patroon: "Pers. nr.: 3  In dienst: ..."
-  const persMatch = text.match(/Pers\.\s*nr\.\s*:\s*(\d+)/);
-  if (persMatch) data._persNr = persMatch[1].trim();
+Retourneer ALLEEN een JSON array zonder uitleg, markdown of codeblok:
+[
+  {
+    "persNr": "3",
+    "achternaam": "Bakker",
+    "voorvoegsel": "",
+    "job": "Junior Support Specialist",
+    "department": "Support",
+    "cost_center": "",
+    "marital_status": "Ongehuwd",
+    "bank_account_iban": "NL74ARSN0423905341"
+  }
+]
 
-  // ── Achternaam voor fallback matching ──────────────────────────────────
-  // Exacte patroon regel 2: "Buddee Demo Support De heer J.P. Bakker"
-  // of "Buddee Demo Support Mevrouw A.M. Kowalski"
-  const naamMatch = text.match(/(?:De heer|Mevrouw|Dhr\.|Mevr\.)\s+[A-Z][\w.]*\.?\s+(?:([a-z]{1,10})\s+)?([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\-']+)/);
-  if (naamMatch) {
-    data._achternaam  = naamMatch[2];
-    data._voorvoegsel = naamMatch[1] || '';
+Regels:
+- persNr: getal achter "Pers. nr.:" — als string
+- achternaam: alleen achternaam, geen initialen of aanhef
+- voorvoegsel: tussenvoegsel (de/van/van der) — leeg als niet aanwezig
+- job: waarde na "Functie:" — leeg als niet aanwezig
+- department: waarde na "Afdeling:" — leeg als niet aanwezig
+- cost_center: waarde na "Kostenplaats:" — LEEG als het veld leeg is
+- marital_status: normaliseer naar: Ongehuwd / Gehuwd / Duurzaam Gescheiden / Samenwonend / Gescheiden / Weduwe/Weduwnaar
+- bank_account_iban: IBAN nummer — leeg als niet aanwezig`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1000,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64Pdf } },
+          { type: 'text', text: prompt }
+        ]
+      }]
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(`API fout ${response.status}: ${err?.error?.message || response.statusText}`);
   }
 
-  // ── Functie ─────────────────────────────────────────────────────────────
-  // Nmbrs patroon: "Functie: Junior Support Speci  Minimumloon: 14,71"
-  const funcMatch = text.match(/Functie:\s+([^\n]+?)(?:\s{2,}|Minimumloon|\n)/);
-  if (funcMatch) {
-    const job = funcMatch[1].trim();
-    if (job && job !== '-') data.job = job;
-  }
-
-  // ── Afdeling ────────────────────────────────────────────────────────────
-  // Nmbrs patroon: "Afdeling: Support  Parttime %: 80,00"
-  const afdelMatch = text.match(/Afdeling:\s+([^\n]+?)(?:\s{2,}|Parttime|\n)/);
-  if (afdelMatch) {
-    const dept = afdelMatch[1].trim();
-    if (dept && dept !== '-') data.department = dept;
-  }
-
-  // ── Kostenplaats ────────────────────────────────────────────────────────
-  // Nmbrs patroon: "Kostenplaats:  Uurloon: 14,46" (leeg als geen waarde)
-  const kpMatch = text.match(/Kostenplaats:\s+([^\n]+?)(?:\s{2,}|Uurloon|\n)/);
-  if (kpMatch) {
-    const kp = kpMatch[1].trim();
-    if (kp && kp !== '-' && kp !== '') data.cost_center = kp;
-  }
-
-  // ── Burgerlijke staat ────────────────────────────────────────────────────
-  // Nmbrs patroon: "Burg. staat: Ongehuwd  Stam salaris: 2505,6"
-  const bsMatch = text.match(/Burg\.\s*staat:\s+([^\n]+?)(?:\s{2,}|Stam salaris|\n)/);
-  if (bsMatch) {
-    const bs = bsMatch[1].trim();
-    if (bs && bs !== '-') {
-      if      (bs.startsWith('Ongehuwd'))   data.marital_status = 'Ongehuwd';
-      else if (bs.startsWith('Gehuwd'))     data.marital_status = 'Gehuwd';
-      else if (bs.startsWith('Duurz'))      data.marital_status = 'Duurzaam Gescheiden';
-      else if (bs.startsWith('Samenwon'))   data.marital_status = 'Samenwonend';
-      else if (bs.startsWith('Weduwe'))     data.marital_status = 'Weduwe/Weduwnaar';
-      else if (bs.startsWith('Gescheiden')) data.marital_status = 'Gescheiden';
-      else                                  data.marital_status = bs;
-    }
-  }
-
-  // ── IBAN ─────────────────────────────────────────────────────────────────
-  // Nmbrs patroon: "NL74ARSN0423905341" op eigen regel na "Per Bank IBAN:"
-  const ibanMatch = text.match(/NL\d{2}[A-Z]{4}\d{10}/);
-  if (ibanMatch) data.bank_account_iban = ibanMatch[0];
-
-  return data;
+  const data = await response.json();
+  const raw  = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+  const clean = raw.replace(/```json|```/g, '').trim();
+  const parsed = JSON.parse(clean);
+  if (!Array.isArray(parsed)) throw new Error('API retourneerde geen array');
+  return parsed;
 }
 
-// Verwerk alle geüploade PDF-bestanden — leest tekst direct zonder API
+// PDF bestand naar base64
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = e => resolve(e.target.result.split(',')[1]);
+    reader.onerror = () => reject(new Error('Kan bestand niet lezen'));
+    reader.readAsDataURL(file);
+  });
+}
+
+// Verwerk alle geüploade PDF bestanden
 async function handlePdfFiles(files) {
   if (!files || files.length === 0) return;
   if (xmlWorkers.length === 0) { goToPage(2); return; }
+
+  // API key ophalen
+  const apiKey = (document.getElementById('apiKeyInput')?.value || '').trim();
+  if (!apiKey) {
+    showStatus('statusBar2', 'err', '✗ Vul eerst je Anthropic API key in bovenaan de pagina.');
+    return;
+  }
 
   mergedWorkers = JSON.parse(JSON.stringify(xmlWorkers));
 
   const fileArr = Array.from(files);
   g('fileTag2').style.display = 'inline-flex';
-  g('fileTag2').textContent = `📄 ${fileArr.length} bestand(en) geselecteerd`;
-  showStatus('statusBar2','info',`Bezig met verwerken van ${fileArr.length} bestand(en)...`);
+  g('fileTag2').textContent   = `📄 ${fileArr.length} bestand(en) geselecteerd`;
+  showStatus('statusBar2', 'info', 'Loonstroken worden gescand via AI — even geduld...');
 
   const progressList = g('pdfProgressList');
   progressList.innerHTML = '';
@@ -884,27 +918,25 @@ async function handlePdfFiles(files) {
 
   for (const file of fileArr) {
     const li = document.createElement('li');
-    li.innerHTML = `<span class="pi">⏳</span> ${file.name}`;
+    li.innerHTML = `<span class="pi">⏳</span> ${file.name} — AI scant loonstroken...`;
     progressList.appendChild(li);
 
     try {
-      const pages = await readPdfPages(file);
-      totalPages += pages.length;
+      const base64    = await fileToBase64(file);
+      const medewerkers = await extractLoonstrokenViaApi(base64, apiKey);
+      totalPages += medewerkers.length;
+
       const details = [];
 
-      for (const pageText of pages) {
-        const loonData   = extractLoonstrookData(pageText);
-        const persNr     = loonData._persNr;
-        const achternaam = loonData._achternaam;
-        delete loonData._persNr;
-        delete loonData._achternaam;
-        delete loonData._voorvoegsel;
+      for (const m of medewerkers) {
+        const persNr     = String(m.persNr || '').trim();
+        const achternaam = (m.achternaam || '').trim();
 
-        // Match op personeelsnummer, fallback op achternaam
+        // Match op personeelsnummer, fallback achternaam
         let matched = null;
         if (persNr) {
           matched = mergedWorkers.find(w =>
-            String(w['number*'] || w.number || '').trim() === String(persNr).trim()
+            String(w['number*'] || w.number || '').trim() === persNr
           );
         }
         if (!matched && achternaam) {
@@ -914,17 +946,26 @@ async function handlePdfFiles(files) {
         }
 
         if (!matched) {
-          details.push(`pers.nr ${persNr || '?'} — geen match`);
+          details.push(`pers.nr ${persNr || '?'} (${achternaam || '?'}) — geen match`);
           continue;
         }
 
-        // Vul alleen gevonden & nog lege velden in
+        // Veldmapping
+        const fieldMap = {
+          job:               'job',
+          department:        'department',
+          cost_center:       'cost_center',
+          marital_status:    'marital_status',
+          bank_account_iban: 'bank_account_iban',
+        };
+
         let added = 0;
-        Object.entries(loonData).forEach(([key, val]) => {
-          if (val && val !== '' && (!matched[key] || matched[key] === '')) {
-            matched[key] = val;
+        Object.entries(fieldMap).forEach(([apiKey2, buddeeKey]) => {
+          const val = (m[apiKey2] || '').trim();
+          if (val && (!matched[buddeeKey] || matched[buddeeKey] === '')) {
+            matched[buddeeKey] = val;
             if (!matched._source) matched._source = {};
-            matched._source[key] = 'pdf';
+            matched._source[buddeeKey] = 'pdf';
             added++;
             totalAdded++;
           }
@@ -935,16 +976,16 @@ async function handlePdfFiles(files) {
       }
 
       li.className = details.some(d => !d.includes('geen match')) ? 'done-item' : 'empty-item';
-      li.innerHTML = `<span class="pi">${li.className === 'done-item' ? '✓' : '⚠'}</span> `
-        + `${file.name} (${pages.length} loonstroken) — ${details.join(' · ')}`;
+      li.innerHTML  = `<span class="pi">${li.className === 'done-item' ? '✓' : '⚠'}</span> `
+        + `${file.name} (${medewerkers.length} loonstroken) — ${details.join(' · ')}`;
 
     } catch(err) {
       li.className = 'empty-item';
-      li.innerHTML = `<span class="pi">✗</span> ${file.name} — fout: ${err.message}`;
+      li.innerHTML  = `<span class="pi">✗</span> ${file.name} — fout: ${err.message}`;
     }
   }
 
-  // Statistieken bijwerken
+  // Statistieken
   g('statPdf').textContent     = totalPages;
   g('statMatched').textContent = matchedCount;
   g('statAdded').textContent   = totalAdded;
@@ -967,77 +1008,11 @@ async function handlePdfFiles(files) {
   g('badgePdf2').textContent    = `${pdfCount} loonstrook`;
   g('badgeEmpty2').textContent  = `${missCount} leeg`;
 
-  renderTable('tableHead2','tableBody2', mergedWorkers, 'merged');
-  g('pdfResults').style.display    = 'block';
+  renderTable('tableHead2', 'tableBody2', mergedWorkers, 'merged');
+  g('pdfResults').style.display     = 'block';
   g('pdfProgressBox').style.display = 'block';
-  showStatus('statusBar2','ok',
-    `✓ ${totalPages} loonstroken verwerkt uit ${fileArr.length} bestand(en) — ${matchedCount} gematcht, ${totalAdded} velden aangevuld`);
-}
-
-// PDF lezen: geeft array van tekst per pagina (1 pagina = 1 medewerker)
-function readPdfPages(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      try {
-        const bytes = new Uint8Array(e.target.result);
-        const raw   = new TextDecoder('latin1').decode(bytes);
-        const text  = extractPdfText(raw);
-
-        // Elke Nmbrs loonstrook begint met "Salarisspecificatie"
-        const pages = text
-          .split(/(?=Salarisspecificatie)/)
-          .map(p => p.trim())
-          .filter(p => p.length > 100 && p.includes('Pers'));
-
-        if (pages.length === 0) throw new Error('Geen loonstroken gevonden in PDF. Controleer of dit een Nmbrs PDF is.');
-        resolve(pages);
-      } catch(err) { reject(err); }
-    };
-    reader.onerror = () => reject(new Error('Kan bestand niet lezen'));
-    reader.readAsArrayBuffer(file);
-  });
-}
-
-// Extraheer leesbare tekst uit een PDF byte-stream
-function extractPdfText(raw) {
-  let text = '';
-
-  // Methode 1: BT...ET blokken (standaard PDF tekst operators)
-  const btBlocks = raw.match(/BT[\s\S]*?ET/g) || [];
-  for (const block of btBlocks) {
-    // (tekst) Tj
-    for (const m of block.matchAll(/\(([^)]{1,400})\)\s*Tj/g)) {
-      text += decodePdfString(m[1]) + ' ';
-    }
-    // [(tekst)] TJ
-    for (const m of block.matchAll(/\[([^\]]+)\]\s*TJ/g)) {
-      for (const p of m[1].matchAll(/\(([^)]*)/g)) {
-        text += decodePdfString(p[1]) + ' ';
-      }
-    }
-    // Newline na Td / T* / Tm
-    if (/\bT[d*m]\b/.test(block)) text += '\n';
-  }
-
-  // Methode 2: fallback als BT/ET niets oplevert
-  if (text.replace(/\s/g,'').length < 50) {
-    for (const m of raw.matchAll(/\(([^\x00-\x08\x0b\x0c\x0e-\x1f()\\]{3,300})\)/g)) {
-      text += decodePdfString(m[1]) + ' ';
-    }
-  }
-
-  return text;
-}
-
-// Decodeer standaard PDF escape sequences
-function decodePdfString(s) {
-  return s
-    .replace(/\\n/g, '\n')
-    .replace(/\\r/g, '\r')
-    .replace(/\\t/g, '\t')
-    .replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)))
-    .replace(/\\(.)/g, '$1');
+  showStatus('statusBar2', 'ok',
+    `✓ ${totalPages} loonstroken gescand — ${matchedCount} gematcht, ${totalAdded} velden aangevuld`);
 }
 
 // TABLE RENDER
@@ -1087,6 +1062,10 @@ function exportExcel() {
 // ═══════════════════════════════════════════════════════════════════════════
 // STATUS & RESET
 // ═══════════════════════════════════════════════════════════════════════════
+function handleApiKeyInput(input) {
+  input.classList.toggle('ok', input.value.trim().startsWith('sk-ant-') && input.value.length > 20);
+}
+
 function showStatus(id, type, msg) {
   const el = g(id);
   el.className = 'status-bar ' + type;
